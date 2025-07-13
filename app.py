@@ -17,18 +17,17 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 🧰 Display selenium.log in Streamlit
+# 📄 Display selenium.log in Streamlit
 def show_selenium_log():
     log_path = 'selenium.log'
     if os.path.exists(log_path):
         with open(log_path, 'r') as f:
-            log_content = f.read()
-        st.subheader("🔍 Selenium Log Output")
-        st.code(log_content, language='bash')
+            st.subheader("🔍 Selenium Log Output")
+            st.code(f.read(), language='bash')
     else:
-        st.warning("🚫 Log file not found.")
+        st.warning("🚫 selenium.log not found.")
 
-# 🚗 Get WebDriver with error handling
+# 🚗 Headless browser setup
 def get_driver():
     options = Options()
     options.add_argument('--headless=new')
@@ -50,27 +49,25 @@ def get_driver():
         st.code(str(e), language='bash')
         return None
 
-# 🌐 Load page with retries
-def get_website_content(target_url, max_retries=3):
+# 🌐 Load target page with retries
+def get_website_content(url, max_retries=3):
     for attempt in range(max_retries):
-        st.info(f"🔁 Attempt {attempt + 1} to load page...")
         driver = get_driver()
         if driver is None:
+            st.warning("🚫 Could not initiate WebDriver.")
             continue
-
         try:
-            driver.get(target_url)
+            driver.get(url)
             time.sleep(3)
-            st.success("✅ Page loaded successfully.")
+            st.success("✅ Page loaded.")
             return driver
         except Exception as e:
-            st.warning(f"⚠️ Failed to load URL: {e}")
+            st.warning(f"Attempt {attempt + 1} failed: {e}")
             driver.quit()
-
-    st.error("❌ All attempts failed.")
+    st.error("❌ All attempts to load the page failed.")
     return None
 
-# 🕸️ Select filters
+# 🎛️ Set dropdown filters
 def select_filters(driver, wait, year, month):
     try:
         dropdown1 = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".period_drp .my-select__control")))
@@ -90,7 +87,7 @@ def select_filters(driver, wait, year, month):
     except Exception as e:
         st.error(f"Failed to apply filters: {e}")
 
-# 🧵 Extract Excel links
+# 🔗 Extract Excel URLs from all paginated tables
 def extract_links_from_table(driver, wait):
     excel_links = []
 
@@ -99,27 +96,25 @@ def extract_links_from_table(driver, wait):
             table = wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="root"]/div/div[1]/main/div/div[3]/div/div/div[2]/table')))
             rows = table.find_elements(By.TAG_NAME, "tr")
             for row in rows:
-                links = row.find_elements(By.TAG_NAME, "a")
-                for link in links:
+                for link in row.find_elements(By.TAG_NAME, "a"):
                     href = link.get_attribute("href")
-                    if href and "PSP" in href and href.endswith((".xls", ".xlsx", ".XLS")):
+                    if isinstance(href, str) and "PSP" in href and href.endswith((".xls", ".xlsx", ".XLS")):
                         try:
                             date_str = href.split("/")[-1].split("_")[0]
                             report_date = datetime.strptime(date_str, "%d.%m.%y")
                             excel_links.append((report_date, href))
-                        except:
-                            continue
+                        except Exception as e:
+                            st.warning(f"⚠️ Skipped invalid date link: {href}")
         except Exception as e:
-            st.error(f"Error locating or reading table: {e}")
+            st.error(f"Error parsing table: {e}")
 
     extract()
     while True:
         try:
-            next_button = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "button[aria-label='Next Page']")))
-            if next_button.is_enabled():
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
-                time.sleep(1)
-                next_button.click()
+            next_btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "button[aria-label='Next Page']")))
+            if next_btn.is_enabled():
+                driver.execute_script("arguments[0].scrollIntoView(true);", next_btn)
+                next_btn.click()
                 time.sleep(5)
                 extract()
             else:
@@ -129,7 +124,7 @@ def extract_links_from_table(driver, wait):
 
     return sorted(excel_links, key=lambda x: x[0])
 
-# 📦 Process Excel downloads
+# 📥 Read Excel and parse into DataFrame
 def process_excel_links(excel_links):
     expected_columns = ["Region", "NR", "WR", "SR", "ER", "NER", "Total", "Remarks"]
     combined_data = []
@@ -150,7 +145,7 @@ def process_excel_links(excel_links):
 
     return pd.concat(combined_data, ignore_index=True) if combined_data else None
 
-# 🧪 Streamlit app entry point
+# 🚀 App logic
 def main():
     st.title("📊 Grid India PSP Report Extractor")
 
@@ -161,7 +156,7 @@ def main():
     selected_month = st.selectbox("Select Month", months)
 
     if st.button("Extract Data"):
-        with st.spinner("🧪 Scraping data... Please wait"):
+        with st.spinner("🧪 Scraping... please wait"):
             driver = get_website_content("https://grid-india.in/en/reports/daily-psp-report")
             if not driver:
                 show_selenium_log()
@@ -175,18 +170,16 @@ def main():
                 driver.quit()
 
             if not excel_links:
-                st.error("No data extracted.")
+                st.error("No data found.")
                 show_selenium_log()
                 return
 
             final_df = process_excel_links(excel_links)
-
             if final_df is not None:
                 output = BytesIO()
                 final_df.to_excel(output, index=False)
                 output.seek(0)
-
-                st.success(f"✅ Data extraction complete! Extracted {len(final_df)} rows.")
+                st.success(f"✅ Extracted {len(final_df)} rows.")
                 st.download_button(
                     label="📥 Download Excel",
                     data=output,

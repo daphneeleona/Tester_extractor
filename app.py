@@ -12,8 +12,6 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import WebDriverException
-from webdriver_manager.chrome import ChromeDriverManager
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -27,7 +25,7 @@ def show_selenium_log():
     else:
         st.warning("🚫 selenium.log not found.")
 
-# 🚗 Headless browser setup
+# 🚗 Use system-installed ChromeDriver
 def get_driver():
     options = Options()
     options.add_argument('--headless=new')
@@ -35,49 +33,41 @@ def get_driver():
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
-    options.add_argument('--disable-features=NetworkService')
-    options.add_argument('--disable-features=VizDisplayCompositor')
     options.add_argument('--disable-blink-features=AutomationControlled')
 
     try:
-        service = Service(ChromeDriverManager().install(), log_path='selenium.log')
+        service = Service('/usr/bin/chromedriver')  # ✅ Pre-installed driver path
         driver = webdriver.Chrome(service=service, options=options)
         driver.implicitly_wait(10)
         return driver
-    except WebDriverException as e:
-        st.error("⚠️ WebDriver failed to initialize.")
+    except Exception as e:
+        st.error("⚠️ Could not launch Chrome. Check that Chrome and chromedriver are installed.")
         st.code(str(e), language='bash')
         return None
 
-# 🌐 Load target page with retries
-def get_website_content(url, max_retries=3):
+# 🌐 Load site with retries
+def get_website_content(url, max_retries=2):
     for attempt in range(max_retries):
         driver = get_driver()
         if driver is None:
-            st.warning("🚫 Could not initiate WebDriver.")
+            st.warning("Retrying browser setup...")
             continue
         try:
             driver.get(url)
             time.sleep(3)
-            st.success("✅ Page loaded.")
             return driver
         except Exception as e:
             st.warning(f"Attempt {attempt + 1} failed: {e}")
             driver.quit()
-    st.error("❌ All attempts to load the page failed.")
     return None
 
-# 🎛️ Set dropdown filters
+# 🎛️ Apply year/month filters
 def select_filters(driver, wait, year, month):
     try:
-        dropdown1 = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".period_drp .my-select__control")))
-        dropdown1.click()
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".period_drp .my-select__control"))).click()
         wait.until(EC.element_to_be_clickable((By.XPATH, f"//div[contains(text(), '{year}')]"))).click()
-
-        dropdown2 = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".period_drp.me-1 .my-select__control")))
-        dropdown2.click()
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".period_drp.me-1 .my-select__control"))).click()
         wait.until(EC.element_to_be_clickable((By.XPATH, f"//div[contains(text(), '{month}')]"))).click()
-
         time.sleep(10)
         try:
             Select(wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "select[aria-label='Choose a page size']")))).select_by_visible_text("100")
@@ -85,28 +75,27 @@ def select_filters(driver, wait, year, month):
             pass
         time.sleep(10)
     except Exception as e:
-        st.error(f"Failed to apply filters: {e}")
+        st.error(f"Filter selection failed: {e}")
 
-# 🔗 Extract Excel URLs from all paginated tables
+# 🔗 Extract Excel file links
 def extract_links_from_table(driver, wait):
-    excel_links = []
+    links = []
 
     def extract():
         try:
-            table = wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="root"]/div/div[1]/main/div/div[3]/div/div/div[2]/table')))
-            rows = table.find_elements(By.TAG_NAME, "tr")
-            for row in rows:
-                for link in row.find_elements(By.TAG_NAME, "a"):
-                    href = link.get_attribute("href")
-                    if isinstance(href, str) and "PSP" in href and href.endswith((".xls", ".xlsx", ".XLS")):
+            table = wait.until(EC.presence_of_element_located((By.XPATH, '//table')))
+            for row in table.find_elements(By.TAG_NAME, "tr"):
+                for a in row.find_elements(By.TAG_NAME, "a"):
+                    href = a.get_attribute("href")
+                    if href and isinstance(href, str) and "PSP" in href and href.endswith((".xls", ".xlsx", ".XLS")):
                         try:
                             date_str = href.split("/")[-1].split("_")[0]
-                            report_date = datetime.strptime(date_str, "%d.%m.%y")
-                            excel_links.append((report_date, href))
-                        except Exception as e:
-                            st.warning(f"⚠️ Skipped invalid date link: {href}")
+                            dt = datetime.strptime(date_str, "%d.%m.%y")
+                            links.append((dt, href))
+                        except:
+                            continue
         except Exception as e:
-            st.error(f"Error parsing table: {e}")
+            st.warning(f"Link extraction error: {e}")
 
     extract()
     while True:
@@ -122,32 +111,32 @@ def extract_links_from_table(driver, wait):
         except:
             break
 
-    return sorted(excel_links, key=lambda x: x[0])
+    return sorted(links, key=lambda x: x[0])
 
-# 📥 Read Excel and parse into DataFrame
+# 📦 Process and parse Excel files
 def process_excel_links(excel_links):
-    expected_columns = ["Region", "NR", "WR", "SR", "ER", "NER", "Total", "Remarks"]
-    combined_data = []
+    expected = ["Region", "NR", "WR", "SR", "ER", "NER", "Total", "Remarks"]
+    data = []
 
-    for report_date, url in excel_links:
+    for dt, url in excel_links:
         try:
-            response = requests.get(url, verify=False)
-            if response.status_code == 200:
+            r = requests.get(url, verify=False)
+            if r.status_code == 200:
                 ext = url.split(".")[-1].lower()
                 engine = "openpyxl" if ext == "xlsx" else "xlrd"
-                df_full = pd.read_excel(BytesIO(response.content), sheet_name="MOP_E", engine=engine, header=None)
+                df_full = pd.read_excel(BytesIO(r.content), sheet_name="MOP_E", engine=engine, header=None)
                 df = df_full.iloc[5:13, :8].copy()
-                df.columns = expected_columns
-                df.insert(0, "Date", report_date.strftime("%d-%m-%Y"))
-                combined_data.append(df)
+                df.columns = expected
+                df.insert(0, "Date", dt.strftime("%d-%m-%Y"))
+                data.append(df)
         except Exception as e:
-            st.warning(f"Failed to process {url}: {e}")
+            st.warning(f"Could not process {url}: {e}")
 
-    return pd.concat(combined_data, ignore_index=True) if combined_data else None
+    return pd.concat(data, ignore_index=True) if data else None
 
-# 🚀 App logic
+# 🖥️ Streamlit UI
 def main():
-    st.title("📊 Grid India PSP Report Extractor")
+    st.title("📊 Grid India PSP Extractor")
 
     years = [f"{y}-{str(y+1)[-2:]}" for y in range(2023, 2026)]
     selected_year = st.selectbox("Select Financial Year", years[::-1])
@@ -156,7 +145,7 @@ def main():
     selected_month = st.selectbox("Select Month", months)
 
     if st.button("Extract Data"):
-        with st.spinner("🧪 Scraping... please wait"):
+        with st.spinner("🔍 Loading and scraping data..."):
             driver = get_website_content("https://grid-india.in/en/reports/daily-psp-report")
             if not driver:
                 show_selenium_log()
@@ -170,24 +159,19 @@ def main():
                 driver.quit()
 
             if not excel_links:
-                st.error("No data found.")
+                st.error("No report links found.")
                 show_selenium_log()
                 return
 
-            final_df = process_excel_links(excel_links)
-            if final_df is not None:
-                output = BytesIO()
-                final_df.to_excel(output, index=False)
-                output.seek(0)
-                st.success(f"✅ Extracted {len(final_df)} rows.")
-                st.download_button(
-                    label="📥 Download Excel",
-                    data=output,
-                    file_name="Grid_India_PSP_Report.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            df = process_excel_links(excel_links)
+            if df is not None:
+                bio = BytesIO()
+                df.to_excel(bio, index=False)
+                bio.seek(0)
+                st.success(f"✅ Extracted {len(df)} rows.")
+                st.download_button("📥 Download Excel", bio, "Grid_India_PSP_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             else:
-                st.error("No valid Excel data found.")
+                st.error("No valid Excel content.")
 
             show_selenium_log()
 

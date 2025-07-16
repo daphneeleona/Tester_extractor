@@ -53,7 +53,7 @@ def get_website_content(url, max_retries=2):
             st.warning("Retrying browser setup...")
             continue
         try:
-            driver.get(url, verify = False)
+            driver.get(url)
             time.sleep(3)
             return driver
         except Exception as e:

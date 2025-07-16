@@ -34,6 +34,8 @@ def get_driver():
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--ignore-certificate-errors')
+    options.add_argument('--no-proxy-server')
 
     try:
         service = Service('/usr/bin/chromedriver')  # ✅ Pre-installed driver path
